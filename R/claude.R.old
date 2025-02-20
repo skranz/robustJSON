@@ -1,0 +1,211 @@
+example = function() {
+
+  # Example usage:
+  wrong_json = 'Here is the json: [{
+    "name": "myname", "cm" = 123, hair=\'brown\''
+
+
+
+    # Example usage:
+  wrong_json = 'Here is the json: {
+    "name": "myname", "cm" = 123, hair=\'blue\'} JSON is gone.'
+
+
+  # Shall return a string with
+  # desired repaired json output:
+  # [{"name: "myname", "cm": 123, "hair": "brown"}]
+
+
+  wrong_json = 'Here is the json: [{
+    "name": "myname", "cm" = 123, hair=\'brown\'}, {name=4, cm=23'
+  token_df = tokenize_json(wrong_json)
+  cat(repair_json(token_df=token_df))
+  cat(repair_json_gpt(token_df=token_df))
+
+    cat(json)
+
+  # Shall return a string with
+  # desired repaired json output:
+  # [{"name: "myname", "cm": 123, "hair": "brown"}]
+
+
+}
+
+
+tokenize_json <- function(s) {
+  library(stringi)
+
+  pattern = '((?<!\\\\)["\'])|([\\(\\)\\[\\]\\{\\}\\:,\n=])'
+
+
+
+
+  #pattern <- '[\'"\\(\\)\\[\\]\\{\\}\\:,]'
+  # Use stringi to get both the matched text and its positions.
+  locs <- stri_locate_all_regex(s, pattern)[[1]]
+  tokens = stri_sub(s, locs)
+
+  text_pattern = paste0('.*?(?=',pattern,')')
+  txt_locs = stri_locate_all_regex(s, text_pattern)[[1]]
+  txt_locs = txt_locs[txt_locs[,1]<= txt_locs[,2],]
+  txt = stri_sub(s, txt_locs)
+
+
+  # Create a data.frame of detected fields.
+  token_df <- bind_rows(
+    tibble(token = ifelse(tokens == "\n", "nl", tokens),start = locs[, "start"],end = locs[, "end"], content=tokens),
+    tibble(token = ifelse(trimws(txt)=="","space", "txt"),start = txt_locs[, "start"],end = txt_locs[, "end"], content=txt )
+  ) %>%
+    arrange(start, end)
+  token_df
+}
+
+repair_json <- function(token_df) {
+  # Initialize variables
+  json_str <- ""
+  in_string <- FALSE
+  key_mode <- TRUE  # Whether we're expecting a key
+  current_key <- ""
+  json_started <- FALSE
+  brace_stack <- character(0)
+
+  # Process tokens
+  for (i in 1:nrow(token_df)) {
+    token <- token_df$token[i]
+    content <- token_df$content[i]
+
+    # Start JSON at first structural character
+    if (!json_started) {
+      if (content %in% c("[", "{")) {
+        json_started <- TRUE
+      } else {
+        next
+      }
+    }
+
+    # Skip whitespace
+    if (token %in% c("nl", "space")) {
+      next
+    }
+
+    # Handle different token types
+    if (token == "txt") {
+      content <- trimws(content)
+      if (content == "") next
+
+      # If we're in key mode
+      if (key_mode) {
+        current_key <- content
+        json_str <- paste0(json_str, '"', content, '"')
+        key_mode <- FALSE
+      } else {
+        # Handle numeric values
+        if (!is.na(suppressWarnings(as.numeric(content)))) {
+          json_str <- paste0(json_str, content)
+        } else {
+          json_str <- paste0(json_str, '"', content, '"')
+        }
+        key_mode <- TRUE
+      }
+    }
+    else if (content %in% c('"', "'")) {
+      json_str <- paste0(json_str, '"')
+      in_string <- !in_string
+    }
+    else if (content %in% c(":", "=")) {
+      if (!grepl(':$', json_str)) {
+        json_str <- paste0(json_str, ":")
+      }
+      key_mode <- FALSE
+    }
+    else if (content == ",") {
+      if (!grepl(',$', json_str)) {
+        json_str <- paste0(json_str, ",")
+      }
+      key_mode <- TRUE
+    }
+    else if (content == "{") {
+      brace_stack <- c(brace_stack, "{")
+      json_str <- paste0(json_str, "{")
+      key_mode <- TRUE
+    }
+    else if (content == "}") {
+      brace_stack <- brace_stack[-length(brace_stack)]
+      json_str <- paste0(json_str, "}")
+      key_mode <- TRUE
+    }
+    else if (content == "[") {
+      brace_stack <- c(brace_stack, "[")
+      json_str <- paste0(json_str, "[")
+    }
+    else if (content == "]") {
+      brace_stack <- brace_stack[-length(brace_stack)]
+      json_str <- paste0(json_str, "]")
+    }
+  }
+
+  # Close any unclosed structures
+  if (length(brace_stack) > 0) {
+    for (brace in rev(brace_stack)) {
+      json_str <- paste0(json_str, if(brace == "{") "}" else "]")
+    }
+  }
+
+  # Clean up the JSON string
+  json_str <- gsub('(["\'}\\]])\\s*:', '\\1:', json_str)  # Remove spaces before colons
+  json_str <- gsub(':+', ':', json_str)  # Remove duplicate colons
+  json_str <- gsub(',+', ',', json_str)  # Remove duplicate commas
+  json_str <- gsub('\\s+', '', json_str)  # Remove whitespace
+
+  return(json_str)
+}
+
+repair_json_gpt <- function(token_df) {
+  bracket_depth <- 0
+  collecting <- FALSE
+  out_tokens <- character()
+
+  # Helper function to detect opening vs closing brackets
+  is_open_bracket  <- function(x) x %in% c("[", "{", "(")
+  is_close_bracket <- function(x) x %in% c("]", "}", ")")
+
+  for (i in seq_len(nrow(token_df))) {
+    tok_type <- token_df$token[i]
+    tok_text <- token_df$content[i]
+
+    # If we hit an opening bracket, increase depth and begin collecting
+    if (is_open_bracket(tok_type)) {
+      bracket_depth <- bracket_depth + 1
+      collecting <- TRUE
+    }
+
+    if (collecting) {
+      # ---- Transformations to "repair" the JSON ----
+      if (tok_type == "=") {
+        # Replace = with :
+        tok_text <- ":"
+      } else if (tok_type == "'") {
+        # Replace single quote with double quote
+        tok_text <- '"'
+      } else if (tok_type == "nl") {
+        # You can remove or replace newlines as needed
+        tok_text <- ""
+      }
+      # ---------------------------------------------
+
+      out_tokens <- c(out_tokens, tok_text)
+    }
+
+    # If we hit a closing bracket, decrease depth and possibly stop collecting
+    if (is_close_bracket(tok_type)) {
+      bracket_depth <- bracket_depth - 1
+      if (bracket_depth == 0) {
+        collecting <- FALSE
+      }
+    }
+  }
+
+  # Join all collected tokens into a single repaired JSON string
+  repaired <- paste0(out_tokens, collapse = "")
+  repaired
+}

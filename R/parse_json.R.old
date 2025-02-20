@@ -1,0 +1,147 @@
+
+example = function() {
+
+  # Example usage:
+  wrong_json = 'Here is the json: [{
+    "name": "myname", "cm" = 123, hair=\'brown\''
+
+
+  # Shall return a string with
+  # desired repaired json output:
+  # [{"name: "myname", "cm": 123, "hair": "brown"}]
+
+
+  token_df = tokenize_json(wrong_json)
+  head(token_df)
+
+  json = repair_json(token_df=token_df)
+  cat(json)
+
+  # Shall return a string with
+  # desired repaired json output:
+  # [{"name: "myname", "cm": 123, "hair": "brown"}]
+
+
+}
+
+repair_json <- function(token_df) {
+  # Track bracket stack
+  bracket_stack <- character()
+
+  # Which tokens are considered "opening" or "closing"?
+  open_brackets  <- c("[", "{", "(")
+  close_brackets <- c("]", "}", ")")
+  # Map from opening bracket to the correct closing bracket
+  matching_close <- setNames(close_brackets, open_brackets)
+
+  out_tokens <- character()  # we'll accumulate "fixed" tokens here
+
+  for (i in seq_len(nrow(token_df))) {
+    tok_type <- token_df$token[i]
+    tok_text <- token_df$content[i]
+
+    # -- Basic transformations --
+    if (tok_type == "=") {
+      # Replace = with :
+      tok_text <- ":"
+    } else if (tok_type == "'") {
+      # Replace single quote with double quote
+      tok_text <- '"'
+    } else if (tok_type == "nl") {
+      # Remove or replace newlines
+      tok_text <- ""
+    }
+    # You could optionally remove extra "space" or keep it;
+    # e.g. tok_text <- "" if you want to remove whitespace tokens.
+
+    # -- Bracket stack push/pop --
+    if (tok_type %in% open_brackets) {
+      bracket_stack <- c(bracket_stack, tok_type)  # push
+    } else if (tok_type %in% close_brackets) {
+      # pop from the stack
+      if (length(bracket_stack) > 0) {
+        bracket_stack <- head(bracket_stack, -1)
+      }
+    }
+
+    out_tokens <- c(out_tokens, tok_text)
+  }
+
+  # If we reached the end but still have unclosed brackets, close them in reverse order.
+  while (length(bracket_stack) > 0) {
+    top_bracket    <- tail(bracket_stack, 1)
+    bracket_stack  <- head(bracket_stack, -1)
+    out_tokens     <- c(out_tokens, matching_close[[top_bracket]])
+  }
+
+  # Join into final string
+  repaired <- paste0(out_tokens, collapse = "")
+
+  repaired
+}
+
+
+tokenize_json <- function(s) {
+  library(stringi)
+
+  pattern = '((?<!\\\\)["\'])|([\\(\\)\\[\\]\\{\\}\\:,\n=])'
+
+
+
+
+  #pattern <- '[\'"\\(\\)\\[\\]\\{\\}\\:,]'
+  # Use stringi to get both the matched text and its positions.
+  locs <- stri_locate_all_regex(s, pattern)[[1]]
+  tokens = stri_sub(s, locs)
+
+  text_pattern = paste0('.*?(?=',pattern,')')
+  txt_locs = stri_locate_all_regex(s, text_pattern)[[1]]
+  txt_locs = txt_locs[txt_locs[,1]<= txt_locs[,2],]
+  txt = stri_sub(s, txt_locs)
+
+
+  # Create a data.frame of detected fields.
+  token_df <- bind_rows(
+    tibble(token = ifelse(tokens == "\n", "nl", tokens),start = locs[, "start"],end = locs[, "end"], content=tokens),
+    tibble(token = ifelse(trimws(txt)=="","space", "txt"),start = txt_locs[, "start"],end = txt_locs[, "end"], content=txt )
+  ) %>%
+    arrange(start, end)
+  token_df
+}
+#
+# repair_json = function(token_df) {
+#   ws = c("space","nl")
+#   states = list(
+#     out = list(expect = c("obj","arr")),
+#     obj = list(start = "{", expect = c("field"), close="}"),
+#     arr = list(start = "[", expect = c("object")),
+#     field = list(start = c("quote", "txt"), expect = "field"
+#
+#     obj_lhs = list(
+#       exp_next = c('"',"txt","'"),
+#       allow = ws
+#     ),
+#     obj_mid = list(
+#       exp_next = c(':',"txt","'"),
+#       allow = ws
+#     ),
+#
+#
+#
+#
+#   )
+#
+#
+#   exp_next = list(
+#     out = c("[","{"),
+#     obj_before_left = c('"',"txt"),
+#     obj_after_left = c(':',"="),
+#
+#   )
+#
+#   # out, str
+#
+#   state = "out"
+#
+#
+# }
